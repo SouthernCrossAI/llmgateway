@@ -60,6 +60,47 @@ export function shouldRetryAlternateKey(
 }
 
 /**
+ * Determines whether a request that targets a specific provider should be
+ * retried once with the same env-var key. Used when no alternate key is
+ * configured (single-value env var), so the existing alternate-key retry path
+ * yields nothing — but a transient upstream/gateway hiccup is still worth one
+ * extra attempt. Auth failures (401/403) are excluded because the same key
+ * will fail again.
+ */
+export function shouldRetryDirectProviderSameKey(opts: {
+	requestedProvider: string | undefined;
+	usedProvider: string;
+	errorType: string;
+	statusCode?: number;
+	envVarName: string | undefined;
+	envKeyCount: number;
+	alreadyRetried: boolean;
+}): boolean {
+	if (!opts.requestedProvider) {
+		return false;
+	}
+	if (opts.alreadyRetried) {
+		return false;
+	}
+	if (opts.usedProvider === "custom" || opts.usedProvider === "llmgateway") {
+		return false;
+	}
+	if (!opts.envVarName) {
+		return false;
+	}
+	if (opts.envKeyCount !== 1) {
+		return false;
+	}
+	if (!isRetryableErrorType(opts.errorType)) {
+		return false;
+	}
+	if (opts.statusCode === 401 || opts.statusCode === 403) {
+		return false;
+	}
+	return true;
+}
+
+/**
  * Determines whether a failed request should be retried with a different provider.
  * Only retries when no specific provider was requested, the error is retryable,
  * retry count hasn't been exceeded, and alternative providers are available.
