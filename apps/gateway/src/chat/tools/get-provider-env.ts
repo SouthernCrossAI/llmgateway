@@ -73,16 +73,16 @@ export function getProviderEnv(
 }
 
 /**
- * Returns the number of comma-separated values configured in the provider's
- * env var, or 0 if the env var is unset/empty. Used to decide whether a
- * direct-provider request has any alternate key to fail over to.
+ * Returns the number of comma-separated values configured in the named env
+ * var, or 0 if it's unset/empty. Pass the resolved `envVarName` from the
+ * provider context — it may be a regional override (e.g. `*__SINGAPORE`)
+ * rather than the provider's base var.
  */
-export function getProviderEnvKeyCount(provider: Provider): number {
-	const envVar = getProviderEnvVar(provider);
-	if (!envVar) {
+export function getEnvKeyCount(envVarName: string | undefined): number {
+	if (!envVarName) {
 		return 0;
 	}
-	const value = process.env[envVar];
+	const value = process.env[envVarName];
 	if (!value) {
 		return 0;
 	}
