@@ -5469,6 +5469,10 @@ chat.openapi(completions, async (c) => {
 
 							if (willRetrySameKey) {
 								sameKeyRetryUsed = true;
+								// Re-add abort listener (removed by catch/finally on the
+								// failed attempt) so a client disconnect during the
+								// retried upstream call still cancels.
+								c.req.raw.signal.addEventListener("abort", onAbort);
 								routingAttempts.push(
 									buildRoutingAttempt(
 										usedProvider,
@@ -5854,6 +5858,10 @@ chat.openapi(completions, async (c) => {
 
 							if (willRetrySameKey) {
 								sameKeyRetryUsed = true;
+								// Re-add abort listener (removed by catch/finally on the
+								// failed attempt) so a client disconnect during the
+								// retried upstream call still cancels.
+								c.req.raw.signal.addEventListener("abort", onAbort);
 								routingAttempts.push(
 									buildRoutingAttempt(
 										usedProvider,
@@ -6171,6 +6179,10 @@ chat.openapi(completions, async (c) => {
 
 						if (willRetrySameKey) {
 							sameKeyRetryUsed = true;
+							// Re-add abort listener (removed by catch/finally on the
+							// failed attempt) so a client disconnect during the
+							// retried upstream call still cancels.
+							c.req.raw.signal.addEventListener("abort", onAbort);
 							routingAttempts.push(
 								buildRoutingAttempt(
 									usedProvider,
@@ -6485,6 +6497,10 @@ chat.openapi(completions, async (c) => {
 
 						if (willRetrySameKey) {
 							sameKeyRetryUsed = true;
+							// Re-add abort listener (removed by catch/finally on the
+							// failed attempt) so a client disconnect during the
+							// retried upstream call still cancels.
+							c.req.raw.signal.addEventListener("abort", onAbort);
 							routingAttempts.push(
 								buildRoutingAttempt(
 									usedProvider,
@@ -9357,6 +9373,10 @@ chat.openapi(completions, async (c) => {
 
 			if (willRetrySameKey) {
 				sameKeyRetryUsed = true;
+				// Re-add abort listener (removed by the per-attempt finally) so
+				// a client disconnect during the retried upstream call still
+				// cancels.
+				c.req.raw.signal.addEventListener("abort", onAbort);
 				routingAttempts.push(
 					buildRoutingAttempt(
 						usedProvider,
@@ -9942,6 +9962,10 @@ chat.openapi(completions, async (c) => {
 
 			if (willRetrySameKey) {
 				sameKeyRetryUsed = true;
+				// Re-add abort listener (removed by the per-attempt finally) so
+				// a client disconnect during the retried upstream call still
+				// cancels.
+				c.req.raw.signal.addEventListener("abort", onAbort);
 				routingAttempts.push(
 					buildRoutingAttempt(
 						usedProvider,
