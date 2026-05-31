@@ -60,26 +60,34 @@ export function shouldRetryAlternateKey(
 }
 
 /**
- * Determines whether a request that targets a specific provider should be
- * retried once with the same env-var key. Used when no alternate key is
- * configured (single-value env var), so the existing alternate-key retry path
- * yields nothing — but a transient upstream/gateway hiccup is still worth one
- * extra attempt. Auth failures (401/403) are excluded because the same key
- * will fail again.
+ * Determines whether a failed request should be retried against the same
+ * env-var key. This fires only when there is nowhere else to go: the model
+ * resolves to a single provider (`hasOtherProvider` is false) and that
+ * provider has a single env-var key (so the alternate-key path yields
+ * nothing). It covers both direct-provider requests (`openai/gpt-4o`) and
+ * auto-routed requests where only one provider is available — in both the
+ * scored provider list contains just the one provider. When other providers
+ * exist, cross-provider fallback handles retries instead and this stays off.
+ *
+ * Bounded by `maxRetries` (the resolved routing-config retry budget): with the
+ * default of 2 this allows up to 2 same-key retries (3 attempts total); 0
+ * disables same-key retries. Auth failures (401/403) are excluded because the
+ * same key will fail again, as are BYOK/custom providers (envVarName unset).
  */
-export function shouldRetryDirectProviderSameKey(opts: {
-	requestedProvider: string | undefined;
+export function shouldRetrySameKey(opts: {
 	usedProvider: string;
 	errorType: string;
 	statusCode?: number;
 	envVarName: string | undefined;
 	envKeyCount: number;
-	alreadyRetried: boolean;
+	hasOtherProvider: boolean;
+	retryCount: number;
+	maxRetries: number;
 }): boolean {
-	if (!opts.requestedProvider) {
+	if (opts.retryCount >= opts.maxRetries) {
 		return false;
 	}
-	if (opts.alreadyRetried) {
+	if (opts.hasOtherProvider) {
 		return false;
 	}
 	if (opts.usedProvider === "custom" || opts.usedProvider === "llmgateway") {

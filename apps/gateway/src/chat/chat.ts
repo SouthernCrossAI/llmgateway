@@ -178,7 +178,7 @@ import {
 	providerRetryKey,
 	selectNextProvider,
 	shouldRetryAlternateKey,
-	shouldRetryDirectProviderSameKey,
+	shouldRetrySameKey,
 	shouldRetryRequest,
 } from "./tools/retry-with-fallback.js";
 import {
@@ -5191,7 +5191,7 @@ chat.openapi(completions, async (c) => {
 				// --- Retry loop for provider fallback ---
 				const routingAttempts: RoutingAttempt[] = [];
 				const failedProviderIds = new Set<string>();
-				let sameKeyRetryUsed = false;
+				let sameKeyRetryCount = 0;
 				let res: Response | undefined;
 				for (
 					let retryAttempt = 0;
@@ -5356,14 +5356,17 @@ chat.openapi(completions, async (c) => {
 							const willRetrySameKey =
 								!willRetrySameProvider &&
 								!willRetryTimeout &&
-								shouldRetryDirectProviderSameKey({
-									requestedProvider,
+								shouldRetrySameKey({
 									usedProvider,
 									errorType: "upstream_timeout",
 									statusCode: 0,
 									envVarName,
 									envKeyCount: getEnvKeyCount(envVarName),
-									alreadyRetried: sameKeyRetryUsed,
+									hasOtherProvider: (
+										routingMetadata?.providerScores ?? []
+									).some((s) => s.providerId !== usedProvider),
+									retryCount: sameKeyRetryCount,
+									maxRetries: routingCfg.retry.maxRetries,
 								});
 							const willRetryRequest =
 								willRetrySameProvider || willRetryTimeout || willRetrySameKey;
@@ -5465,7 +5468,7 @@ chat.openapi(completions, async (c) => {
 							}
 
 							if (willRetrySameKey) {
-								sameKeyRetryUsed = true;
+								sameKeyRetryCount++;
 								// Re-add abort listener (removed by catch/finally on the
 								// failed attempt) so a client disconnect during the
 								// retried upstream call still cancels.
@@ -5726,14 +5729,17 @@ chat.openapi(completions, async (c) => {
 							const willRetrySameKey =
 								!willRetrySameProvider &&
 								!willRetryFetch &&
-								shouldRetryDirectProviderSameKey({
-									requestedProvider,
+								shouldRetrySameKey({
 									usedProvider,
 									errorType: "network_error",
 									statusCode: 0,
 									envVarName,
 									envKeyCount: getEnvKeyCount(envVarName),
-									alreadyRetried: sameKeyRetryUsed,
+									hasOtherProvider: (
+										routingMetadata?.providerScores ?? []
+									).some((s) => s.providerId !== usedProvider),
+									retryCount: sameKeyRetryCount,
+									maxRetries: routingCfg.retry.maxRetries,
 								});
 							const willRetryRequest =
 								willRetrySameProvider || willRetryFetch || willRetrySameKey;
@@ -5854,7 +5860,7 @@ chat.openapi(completions, async (c) => {
 							}
 
 							if (willRetrySameKey) {
-								sameKeyRetryUsed = true;
+								sameKeyRetryCount++;
 								// Re-add abort listener (removed by catch/finally on the
 								// failed attempt) so a client disconnect during the
 								// retried upstream call still cancels.
@@ -6006,14 +6012,17 @@ chat.openapi(completions, async (c) => {
 						const willRetrySameKey =
 							!willRetrySameProvider &&
 							!willRetryHttpError &&
-							shouldRetryDirectProviderSameKey({
-								requestedProvider,
+							shouldRetrySameKey({
 								usedProvider,
 								errorType: finishReason,
 								statusCode: res.status,
 								envVarName,
 								envKeyCount: getEnvKeyCount(envVarName),
-								alreadyRetried: sameKeyRetryUsed,
+								hasOtherProvider: (routingMetadata?.providerScores ?? []).some(
+									(s) => s.providerId !== usedProvider,
+								),
+								retryCount: sameKeyRetryCount,
+								maxRetries: routingCfg.retry.maxRetries,
 							});
 						const willRetryRequest =
 							willRetrySameProvider || willRetryHttpError || willRetrySameKey;
@@ -6175,7 +6184,7 @@ chat.openapi(completions, async (c) => {
 						}
 
 						if (willRetrySameKey) {
-							sameKeyRetryUsed = true;
+							sameKeyRetryCount++;
 							// Re-add abort listener (removed by catch/finally on the
 							// failed attempt) so a client disconnect during the
 							// retried upstream call still cancels.
@@ -6362,14 +6371,17 @@ chat.openapi(completions, async (c) => {
 						const willRetrySameKey =
 							!willRetrySameProvider &&
 							!willRetryStreamingError &&
-							shouldRetryDirectProviderSameKey({
-								requestedProvider,
+							shouldRetrySameKey({
 								usedProvider,
 								errorType,
 								statusCode: inferredStatusCode,
 								envVarName,
 								envKeyCount: getEnvKeyCount(envVarName),
-								alreadyRetried: sameKeyRetryUsed,
+								hasOtherProvider: (routingMetadata?.providerScores ?? []).some(
+									(s) => s.providerId !== usedProvider,
+								),
+								retryCount: sameKeyRetryCount,
+								maxRetries: routingCfg.retry.maxRetries,
 							});
 						const willRetryRequest =
 							willRetrySameProvider ||
@@ -6493,7 +6505,7 @@ chat.openapi(completions, async (c) => {
 						}
 
 						if (willRetrySameKey) {
-							sameKeyRetryUsed = true;
+							sameKeyRetryCount++;
 							// Re-add abort listener (removed by catch/finally on the
 							// failed attempt) so a client disconnect during the
 							// retried upstream call still cancels.
@@ -9037,7 +9049,7 @@ chat.openapi(completions, async (c) => {
 	// --- Retry loop for provider fallback ---
 	const routingAttempts: RoutingAttempt[] = [];
 	const failedProviderIds = new Set<string>();
-	let sameKeyRetryUsed = false;
+	let sameKeyRetryCount = 0;
 	let canceled = false;
 	let fetchError: Error | null = null;
 	let isTimeoutFetchError = false;
@@ -9240,14 +9252,17 @@ chat.openapi(completions, async (c) => {
 			const willRetrySameKey =
 				!willRetrySameProvider &&
 				!willRetryFetchNonStreaming &&
-				shouldRetryDirectProviderSameKey({
-					requestedProvider,
+				shouldRetrySameKey({
 					usedProvider,
 					errorType: "network_error",
 					statusCode: 0,
 					envVarName,
 					envKeyCount: getEnvKeyCount(envVarName),
-					alreadyRetried: sameKeyRetryUsed,
+					hasOtherProvider: (routingMetadata?.providerScores ?? []).some(
+						(s) => s.providerId !== usedProvider,
+					),
+					retryCount: sameKeyRetryCount,
+					maxRetries: routingCfg.retry.maxRetries,
 				});
 			const willRetryRequest =
 				willRetrySameProvider || willRetryFetchNonStreaming || willRetrySameKey;
@@ -9369,7 +9384,7 @@ chat.openapi(completions, async (c) => {
 			}
 
 			if (willRetrySameKey) {
-				sameKeyRetryUsed = true;
+				sameKeyRetryCount++;
 				// Re-add abort listener (removed by the per-attempt finally) so
 				// a client disconnect during the retried upstream call still
 				// cancels.
@@ -9770,14 +9785,17 @@ chat.openapi(completions, async (c) => {
 			const willRetrySameKey =
 				!willRetrySameProvider &&
 				!willRetryHttpNonStreaming &&
-				shouldRetryDirectProviderSameKey({
-					requestedProvider,
+				shouldRetrySameKey({
 					usedProvider,
 					errorType: finishReason,
 					statusCode: res.status,
 					envVarName,
 					envKeyCount: getEnvKeyCount(envVarName),
-					alreadyRetried: sameKeyRetryUsed,
+					hasOtherProvider: (routingMetadata?.providerScores ?? []).some(
+						(s) => s.providerId !== usedProvider,
+					),
+					retryCount: sameKeyRetryCount,
+					maxRetries: routingCfg.retry.maxRetries,
 				});
 			const willRetryRequest =
 				willRetrySameProvider || willRetryHttpNonStreaming || willRetrySameKey;
@@ -9958,7 +9976,7 @@ chat.openapi(completions, async (c) => {
 			}
 
 			if (willRetrySameKey) {
-				sameKeyRetryUsed = true;
+				sameKeyRetryCount++;
 				// Re-add abort listener (removed by the per-attempt finally) so
 				// a client disconnect during the retried upstream call still
 				// cancels.

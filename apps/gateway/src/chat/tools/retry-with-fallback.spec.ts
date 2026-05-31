@@ -3,7 +3,7 @@ import { describe, it, expect } from "vitest";
 import {
 	isRetryableErrorType,
 	shouldRetryAlternateKey,
-	shouldRetryDirectProviderSameKey,
+	shouldRetrySameKey,
 	shouldRetryRequest,
 	selectNextProvider,
 	getErrorType,
@@ -154,33 +154,37 @@ describe("shouldRetryAlternateKey", () => {
 	});
 });
 
-describe("shouldRetryDirectProviderSameKey", () => {
+describe("shouldRetrySameKey", () => {
 	const defaultOpts = {
-		requestedProvider: "openai",
 		usedProvider: "openai",
 		errorType: "upstream_error",
 		statusCode: 500,
 		envVarName: "OPENAI_API_KEY",
 		envKeyCount: 1,
-		alreadyRetried: false,
+		hasOtherProvider: false,
+		retryCount: 0,
+		maxRetries: 2,
 	};
 
-	it("retries once for direct provider with single env key on upstream error", () => {
-		expect(shouldRetryDirectProviderSameKey(defaultOpts)).toBe(true);
+	it("retries with single env key on upstream error", () => {
+		expect(shouldRetrySameKey(defaultOpts)).toBe(true);
+	});
+
+	it("does not retry when another provider is available to fall back to", () => {
+		expect(shouldRetrySameKey({ ...defaultOpts, hasOtherProvider: true })).toBe(
+			false,
+		);
 	});
 
 	it("retries on upstream timeouts", () => {
 		expect(
-			shouldRetryDirectProviderSameKey({
-				...defaultOpts,
-				errorType: "upstream_timeout",
-			}),
+			shouldRetrySameKey({ ...defaultOpts, errorType: "upstream_timeout" }),
 		).toBe(true);
 	});
 
 	it("retries on network errors", () => {
 		expect(
-			shouldRetryDirectProviderSameKey({
+			shouldRetrySameKey({
 				...defaultOpts,
 				errorType: "network_error",
 				statusCode: 0,
@@ -188,40 +192,33 @@ describe("shouldRetryDirectProviderSameKey", () => {
 		).toBe(true);
 	});
 
-	it("does not retry when no specific provider was requested", () => {
-		expect(
-			shouldRetryDirectProviderSameKey({
-				...defaultOpts,
-				requestedProvider: undefined,
-			}),
-		).toBe(false);
+	it("retries regardless of whether a specific provider was requested", () => {
+		// The "no other provider" gate lives at the call site (the
+		// provider-fallback check), so this helper no longer keys off
+		// requestedProvider — it fires for both direct and auto-routed requests.
+		expect(shouldRetrySameKey(defaultOpts)).toBe(true);
 	});
 
 	it("does not retry when env var has multiple keys (alternate-key path covers it)", () => {
-		expect(
-			shouldRetryDirectProviderSameKey({ ...defaultOpts, envKeyCount: 2 }),
-		).toBe(false);
+		expect(shouldRetrySameKey({ ...defaultOpts, envKeyCount: 2 })).toBe(false);
 	});
 
 	it("does not retry when no env var was used (BYOK)", () => {
-		expect(
-			shouldRetryDirectProviderSameKey({
-				...defaultOpts,
-				envVarName: undefined,
-			}),
-		).toBe(false);
+		expect(shouldRetrySameKey({ ...defaultOpts, envVarName: undefined })).toBe(
+			false,
+		);
 	});
 
 	it("does not retry on auth failures (same key will fail again)", () => {
 		expect(
-			shouldRetryDirectProviderSameKey({
+			shouldRetrySameKey({
 				...defaultOpts,
 				errorType: "gateway_error",
 				statusCode: 401,
 			}),
 		).toBe(false);
 		expect(
-			shouldRetryDirectProviderSameKey({
+			shouldRetrySameKey({
 				...defaultOpts,
 				errorType: "gateway_error",
 				statusCode: 403,
@@ -231,47 +228,36 @@ describe("shouldRetryDirectProviderSameKey", () => {
 
 	it("does not retry on non-retryable error types", () => {
 		expect(
-			shouldRetryDirectProviderSameKey({
-				...defaultOpts,
-				errorType: "client_error",
-			}),
+			shouldRetrySameKey({ ...defaultOpts, errorType: "client_error" }),
 		).toBe(false);
 		expect(
-			shouldRetryDirectProviderSameKey({
-				...defaultOpts,
-				errorType: "content_filter",
-			}),
+			shouldRetrySameKey({ ...defaultOpts, errorType: "content_filter" }),
 		).toBe(false);
 	});
 
-	it("does not retry when already retried once", () => {
+	it("retries up to maxRetries times then stops", () => {
+		expect(shouldRetrySameKey({ ...defaultOpts, retryCount: 1 })).toBe(true);
+		expect(shouldRetrySameKey({ ...defaultOpts, retryCount: 2 })).toBe(false);
+		expect(shouldRetrySameKey({ ...defaultOpts, retryCount: 3 })).toBe(false);
+	});
+
+	it("does not retry at all when maxRetries is 0", () => {
 		expect(
-			shouldRetryDirectProviderSameKey({
-				...defaultOpts,
-				alreadyRetried: true,
-			}),
+			shouldRetrySameKey({ ...defaultOpts, retryCount: 0, maxRetries: 0 }),
 		).toBe(false);
 	});
 
 	it("does not retry for custom or llmgateway providers", () => {
+		expect(shouldRetrySameKey({ ...defaultOpts, usedProvider: "custom" })).toBe(
+			false,
+		);
 		expect(
-			shouldRetryDirectProviderSameKey({
-				...defaultOpts,
-				usedProvider: "custom",
-			}),
-		).toBe(false);
-		expect(
-			shouldRetryDirectProviderSameKey({
-				...defaultOpts,
-				usedProvider: "llmgateway",
-			}),
+			shouldRetrySameKey({ ...defaultOpts, usedProvider: "llmgateway" }),
 		).toBe(false);
 	});
 
 	it("does not retry when env var is unset (envKeyCount=0)", () => {
-		expect(
-			shouldRetryDirectProviderSameKey({ ...defaultOpts, envKeyCount: 0 }),
-		).toBe(false);
+		expect(shouldRetrySameKey({ ...defaultOpts, envKeyCount: 0 })).toBe(false);
 	});
 });
 
