@@ -6,6 +6,7 @@ import { createLogEntry } from "@/chat/tools/create-log-entry.js";
 import { extractCustomHeaders } from "@/chat/tools/extract-custom-headers.js";
 import { findApiKeyByToken, findProjectById } from "@/lib/cached-queries.js";
 import { parseApiToken } from "@/lib/extract-api-token.js";
+import { internalForwardHeaders } from "@/lib/internal-forward.js";
 import { calculateDataStorageCost, insertLog } from "@/lib/logs.js";
 import { validateModelOutput } from "@/lib/validate-model-output.js";
 
@@ -346,6 +347,7 @@ function forwardHeaders(c: Context): Record<string, string> {
 		"x-debug": c.req.header("x-debug") ?? "",
 		...(noFallbackHeader !== null ? { "x-no-fallback": noFallbackHeader } : {}),
 		"HTTP-Referer": c.req.header("HTTP-Referer") ?? "",
+		...internalForwardHeaders(),
 	};
 }
 
