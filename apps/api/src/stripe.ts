@@ -3247,21 +3247,77 @@ export async function handleInvoicePaymentSucceeded(event: {
 			organization.devPlan) as DevPlanTier;
 		const creditsLimit = getDevPlanCreditsLimit(effectiveTier);
 
-		// Create transaction record for dev plan renewal
-		const [renewalTransaction] = await db
-			.insert(tables.transaction)
-			.values({
-				organizationId,
-				type: "dev_plan_renewal",
-				amount: (invoice.amount_paid / 100).toString(),
-				creditAmount: creditsLimit.toString(),
-				currency: invoice.currency.toUpperCase(),
-				status: "completed",
-				stripePaymentIntentId: (invoice as any).payment_intent,
-				stripeInvoiceId: invoice.id,
-				description: `Dev Plan ${effectiveTier.toUpperCase()} renewed`,
-			})
-			.returning();
+		// The renewal invoice's line items cover the upcoming period, so the
+		// latest line period end is the new `current_period_end` (= next renewal
+		// date). Record it alongside the cycle reset so the dashboard reflects the
+		// new schedule immediately rather than waiting for the follow-up
+		// `customer.subscription.updated` event.
+		const renewedPeriodEnd = invoice.lines.data.reduce(
+			(max, line) => Math.max(max, line.period?.end ?? 0),
+			0,
+		);
+
+		// Insert the renewal transaction and reset the credit cycle in ONE
+		// transaction so they commit together. Previously the insert and the
+		// credit reset were separate awaited statements: if the process died (or
+		// the update threw) after the transaction row committed but before the
+		// reset, the row remained and the idempotency guard above short-circuited
+		// every Stripe retry — leaving a "completed" renewal with credits never
+		// refreshed (stale `devPlanCreditsUsed`/cycle start) while the renewal
+		// date still advanced via `customer.subscription.updated`. onConflictDoNothing
+		// on the unique stripeInvoiceId index makes the pair atomically idempotent
+		// across Stripe's duplicate `invoice.paid`/`invoice.payment_succeeded`
+		// events. Reset the limit to the full tier allotment: mid-cycle tier
+		// changes leave the limit at a prorated value, and a fresh cycle should
+		// grant the tier's full credits. Persist the effective tier and clear the
+		// pending downgrade so a scheduled downgrade becomes the active plan now.
+		// Clear any dunning freeze state since the limit is now authoritative again.
+		const renewalTransaction = await db.transaction(async (tx) => {
+			const [created] = await tx
+				.insert(tables.transaction)
+				.values({
+					organizationId,
+					type: "dev_plan_renewal",
+					amount: (invoice.amount_paid / 100).toString(),
+					creditAmount: creditsLimit.toString(),
+					currency: invoice.currency.toUpperCase(),
+					status: "completed",
+					stripePaymentIntentId: (invoice as any).payment_intent,
+					stripeInvoiceId: invoice.id,
+					description: `Dev Plan ${effectiveTier.toUpperCase()} renewed`,
+				})
+				.onConflictDoNothing()
+				.returning();
+
+			if (created) {
+				await tx
+					.update(tables.organization)
+					.set({
+						devPlan: effectiveTier,
+						devPlanPendingTier: null,
+						devPlanCreditsLimit: creditsLimit.toString(),
+						devPlanCreditsUsed: "0",
+						devPlanPremiumCreditsUsed: "0",
+						devPlanPremiumWeekStart: new Date(),
+						devPlanCreditsFrozen: false,
+						devPlanCreditsLimitBeforeFreeze: null,
+						devPlanBillingCycleStart: new Date(),
+						devPlanExpiresAt: renewedPeriodEnd
+							? new Date(renewedPeriodEnd * 1000)
+							: undefined,
+						devPlanCancelled: false,
+					})
+					.where(eq(tables.organization.id, organizationId));
+			}
+
+			return created;
+		});
+
+		// Row already existed (concurrent/duplicate event won the insert): the
+		// winning path reconciled state and emailed, so bail out here.
+		if (!renewalTransaction) {
+			return;
+		}
 
 		try {
 			const billingDetails = await resolveDevPassBillingDetails(organization);
@@ -3285,41 +3341,6 @@ export async function handleInvoicePaymentSucceeded(event: {
 				e as Error,
 			);
 		}
-
-		// The renewal invoice's line items cover the upcoming period, so the
-		// latest line period end is the new `current_period_end` (= next renewal
-		// date). Record it alongside the cycle reset so the dashboard reflects the
-		// new schedule immediately rather than waiting for the follow-up
-		// `customer.subscription.updated` event.
-		const renewedPeriodEnd = invoice.lines.data.reduce(
-			(max, line) => Math.max(max, line.period?.end ?? 0),
-			0,
-		);
-
-		// Reset credits used and update billing cycle start. Also reset the
-		// limit to the full tier allotment: mid-cycle tier changes leave the
-		// limit at a prorated value, and a fresh cycle should grant the tier's
-		// full credits. Persist the effective tier and clear the pending
-		// downgrade so a scheduled downgrade becomes the active plan now. Clear
-		// any dunning freeze state since the limit is now authoritative again.
-		await db
-			.update(tables.organization)
-			.set({
-				devPlan: effectiveTier,
-				devPlanPendingTier: null,
-				devPlanCreditsLimit: creditsLimit.toString(),
-				devPlanCreditsUsed: "0",
-				devPlanPremiumCreditsUsed: "0",
-				devPlanPremiumWeekStart: new Date(),
-				devPlanCreditsFrozen: false,
-				devPlanCreditsLimitBeforeFreeze: null,
-				devPlanBillingCycleStart: new Date(),
-				devPlanExpiresAt: renewedPeriodEnd
-					? new Date(renewedPeriodEnd * 1000)
-					: undefined,
-				devPlanCancelled: false,
-			})
-			.where(eq(tables.organization.id, organizationId));
 
 		logger.info(
 			`Dev plan ${effectiveTier} renewed for organization ${organizationId}, credits reset to 0/${creditsLimit}`,
