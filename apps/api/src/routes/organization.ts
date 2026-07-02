@@ -4,6 +4,7 @@ import { z } from "zod";
 
 import { userHasOrganizationAccess } from "@/utils/authorization.js";
 import { getOrCreateDefaultOrganization } from "@/utils/default-org.js";
+import { isConfigurableDomain, normalizeDomain } from "@/utils/sso-domain.js";
 
 import { logAuditEvent } from "@llmgateway/audit";
 import {
@@ -50,6 +51,7 @@ const organizationSchema = z.object({
 	planExpiresAt: z.date().nullable(),
 	retentionLevel: z.enum(["retain", "none"]),
 	providerCompliancePolicy: providerCompliancePolicySchema.nullable(),
+	ssoAutoJoinDomain: z.string().nullable(),
 	status: z.enum(["active", "inactive", "deleted"]).nullable(),
 	autoTopUpEnabled: z.boolean(),
 	autoTopUpThreshold: z.string().nullable(),
@@ -112,6 +114,7 @@ const updateOrganizationSchema = z.object({
 	providerCompliancePolicy: providerCompliancePolicySchema
 		.nullable()
 		.optional(),
+	ssoAutoJoinDomain: z.string().max(253).nullable().optional(),
 	autoTopUpEnabled: z.boolean().optional(),
 	autoTopUpThreshold: z.number().min(5).optional(),
 	autoTopUpAmount: z
@@ -461,6 +464,7 @@ organization.openapi(updateOrganization, async (c) => {
 		billingNotes,
 		retentionLevel,
 		providerCompliancePolicy,
+		ssoAutoJoinDomain,
 		autoTopUpEnabled,
 		autoTopUpThreshold,
 		autoTopUpAmount,
@@ -526,6 +530,37 @@ organization.openapi(updateOrganization, async (c) => {
 		}
 	}
 
+	// Google SSO domain auto-join is an enterprise feature managed by owners and
+	// admins. The value is normalized and validated before storage.
+	let normalizedSsoDomain: string | null | undefined;
+	if (ssoAutoJoinDomain !== undefined) {
+		if (userOrganization.organization?.plan !== "enterprise") {
+			throw new HTTPException(403, {
+				message: "SSO auto-join requires an enterprise plan",
+			});
+		}
+		if (
+			userOrganization.role !== "owner" &&
+			userOrganization.role !== "admin"
+		) {
+			throw new HTTPException(403, {
+				message: "Only owners and admins can configure SSO auto-join",
+			});
+		}
+		if (ssoAutoJoinDomain === null || ssoAutoJoinDomain.trim() === "") {
+			normalizedSsoDomain = null;
+		} else {
+			const normalized = normalizeDomain(ssoAutoJoinDomain);
+			if (!isConfigurableDomain(normalized)) {
+				throw new HTTPException(400, {
+					message:
+						"Invalid or disallowed domain. Use a corporate domain like acme.com (consumer email domains are not allowed).",
+				});
+			}
+			normalizedSsoDomain = normalized;
+		}
+	}
+
 	const updateData: any = {};
 	if (name !== undefined) {
 		updateData.name = name;
@@ -551,6 +586,9 @@ organization.openapi(updateOrganization, async (c) => {
 	if (providerCompliancePolicy !== undefined) {
 		updateData.providerCompliancePolicy = providerCompliancePolicy;
 	}
+	if (normalizedSsoDomain !== undefined) {
+		updateData.ssoAutoJoinDomain = normalizedSsoDomain;
+	}
 	if (autoTopUpEnabled !== undefined) {
 		updateData.autoTopUpEnabled = autoTopUpEnabled;
 		if (autoTopUpEnabled && !userOrganization.organization?.autoTopUpEnabled) {
@@ -566,11 +604,24 @@ organization.openapi(updateOrganization, async (c) => {
 		updateData.autoTopUpAmount = autoTopUpAmount.toString();
 	}
 
-	const [updatedOrganization] = await db
-		.update(tables.organization)
-		.set(updateData)
-		.where(eq(tables.organization.id, id))
-		.returning();
+	let updatedOrganization;
+	try {
+		[updatedOrganization] = await db
+			.update(tables.organization)
+			.set(updateData)
+			.where(eq(tables.organization.id, id))
+			.returning();
+	} catch (err) {
+		const code =
+			(err as { code?: string; cause?: { code?: string } })?.code ??
+			(err as { cause?: { code?: string } })?.cause?.code;
+		if (code === "23505" && normalizedSsoDomain) {
+			throw new HTTPException(409, {
+				message: "This domain is already configured by another organization.",
+			});
+		}
+		throw err;
+	}
 
 	// Build changes metadata for audit log
 	const changes: Record<string, { old: unknown; new: unknown }> = {};
@@ -681,6 +732,27 @@ organization.openapi(updateOrganization, async (c) => {
 			resourceType: "organization",
 			resourceId: id,
 			metadata: { changes: autoTopUpChanges },
+		});
+	}
+
+	if (
+		normalizedSsoDomain !== undefined &&
+		normalizedSsoDomain !== oldOrg.ssoAutoJoinDomain
+	) {
+		await logAuditEvent({
+			organizationId: id,
+			userId: user.id,
+			action: "organization.sso_auto_join.update",
+			resourceType: "organization",
+			resourceId: id,
+			metadata: {
+				changes: {
+					ssoAutoJoinDomain: {
+						old: oldOrg.ssoAutoJoinDomain,
+						new: normalizedSsoDomain,
+					},
+				},
+			},
 		});
 	}
 

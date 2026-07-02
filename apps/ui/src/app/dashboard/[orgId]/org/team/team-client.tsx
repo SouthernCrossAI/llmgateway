@@ -8,6 +8,7 @@ import { useEffect, useState } from "react";
 
 import { currencyFormatter } from "@/components/analytics/chart-helpers";
 import { DateRangePicker } from "@/components/date-range-picker";
+import { OrganizationSsoSettings } from "@/components/settings/organization-sso-settings";
 import { useDashboardNavigation } from "@/hooks/useDashboardNavigation";
 import {
 	useTeamMembers,
@@ -548,6 +549,15 @@ export function TeamClient() {
 							)}
 						</CardContent>
 					</Card>
+
+					{selectedOrganization && (
+						<OrganizationSsoSettings
+							organizationId={selectedOrganization.id}
+							savedDomain={selectedOrganization.ssoAutoJoinDomain ?? null}
+							isEnterprise={isEnterprise}
+							canManage={isAdmin}
+						/>
+					)}
 				</div>
 			</div>
 		</div>
