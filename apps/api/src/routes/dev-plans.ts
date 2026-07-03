@@ -170,6 +170,102 @@ function getDevPlanTierChangeCreditPreview(
 	};
 }
 
+// Stripe drafts the `subscription_cycle` renewal invoice up to ~an hour before
+// finalizing and charging it. A tier change inside that window swaps the
+// subscription item's price, but the already-drafted invoice keeps billing the
+// price it was drafted with (proration is suppressed), so the renewal would
+// charge the old tier's price while the renewal webhook applies the new tier
+// and its credit allotment (e.g. a pro→lite downgrade billed $79 but granted
+// lite credits). Re-price the draft with an adjustment line so the upcoming
+// charge matches the tier that takes effect at renewal.
+//
+// The adjustment is computed against the draft's net plan amount (its
+// subscription lines plus any adjustment lines added by earlier tier changes
+// in the same window), which makes it idempotent and correct across
+// consecutive changes (downgrade → upgrade, downgrade → cancel-downgrade) and
+// when the draft was created after the price swap already at the new price.
+//
+// Best-effort: a failure here only reverts to the pre-existing near-boundary
+// mismatch, so it must never fail the tier change itself.
+async function repriceDraftRenewalInvoice(params: {
+	subscriptionId: string;
+	customer: string | { id?: string } | null;
+	newPriceId: string;
+	newTier: DevPlanTier;
+}) {
+	const stripe = getStripe();
+	try {
+		const customerId = getStripeId(params.customer);
+		if (!customerId) {
+			logger.warn(
+				"Skipping draft renewal invoice re-price: subscription customer not found",
+				{ subscriptionId: params.subscriptionId },
+			);
+			return;
+		}
+
+		const drafts = await stripe.invoices.list({
+			subscription: params.subscriptionId,
+			status: "draft",
+			limit: 10,
+		});
+		const draft = drafts.data.find(
+			(invoice) => invoice.billing_reason === "subscription_cycle",
+		);
+		if (!draft?.id) {
+			return;
+		}
+
+		const newPrice = await stripe.prices.retrieve(params.newPriceId);
+		if (typeof newPrice.unit_amount !== "number") {
+			logger.warn(
+				"Skipping draft renewal invoice re-price: new price has no unit_amount",
+				{ subscriptionId: params.subscriptionId, priceId: params.newPriceId },
+			);
+			return;
+		}
+
+		const billedCents = draft.lines.data.reduce((sum, line) => {
+			if (line.parent?.type === "subscription_item_details") {
+				return sum + line.amount;
+			}
+			if (
+				line.parent?.type === "invoice_item_details" &&
+				line.metadata?.devPlanRenewalReprice === "true"
+			) {
+				return sum + line.amount;
+			}
+			return sum;
+		}, 0);
+
+		const adjustmentCents = newPrice.unit_amount - billedCents;
+		if (adjustmentCents === 0) {
+			return;
+		}
+
+		await stripe.invoiceItems.create({
+			customer: customerId,
+			invoice: draft.id,
+			amount: adjustmentCents,
+			currency: draft.currency,
+			description: `Dev Plan renewal adjusted to ${params.newTier.toUpperCase()} pricing`,
+			metadata: {
+				subscriptionType: "dev_plan",
+				devPlanRenewalReprice: "true",
+			},
+		});
+
+		logger.info(
+			`Re-priced draft renewal invoice ${draft.id} for subscription ${params.subscriptionId}: ${adjustmentCents} cent adjustment to ${params.newTier}`,
+		);
+	} catch (error) {
+		logger.error(
+			"Failed to re-price draft renewal invoice after dev plan tier change",
+			error instanceof Error ? error : new Error(String(error)),
+		);
+	}
+}
+
 async function cleanupFailedUpgradeInvoice(params: {
 	invoiceId: string | null;
 	invoiceItemId: string | null;
@@ -1314,6 +1410,16 @@ devPlans.openapi(changeTier, async (c) => {
 				})
 			: null;
 
+		// If Stripe already drafted the upcoming renewal invoice (tier change
+		// within the pre-renewal finalization window), it still bills the old
+		// price — re-price it to match the tier taking effect at renewal.
+		await repriceDraftRenewalInvoice({
+			subscriptionId,
+			customer: subscription.customer,
+			newPriceId,
+			newTier,
+		});
+
 		if (isUpgrade) {
 			const creditPreview = getDevPlanTierChangeCreditPreview(
 				currentTier,
@@ -1608,6 +1714,15 @@ devPlans.openapi(cancelDowngrade, async (c) => {
 				},
 			},
 		);
+
+		// The downgrade may have already re-priced a drafted renewal invoice to
+		// the lower tier; re-price it back so the renewal bills the current tier.
+		await repriceDraftRenewalInvoice({
+			subscriptionId: personalOrg.devPlanStripeSubscriptionId,
+			customer: subscription.customer,
+			newPriceId: currentTierPriceId,
+			newTier: currentTier,
+		});
 
 		await db
 			.update(tables.organization)
