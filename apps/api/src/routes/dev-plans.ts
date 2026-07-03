@@ -187,7 +187,10 @@ function getDevPlanTierChangeCreditPreview(
 //
 // Best-effort: a failure here only reverts to the pre-existing near-boundary
 // mismatch, so it must never fail the tier change itself.
-async function repriceDraftRenewalInvoice(params: {
+//
+// Exported for the real-Stripe test-clock e2e (`dev-plans-reprice.e2e.ts`),
+// which reproduces the pre-renewal draft window against a live sandbox.
+export async function repriceDraftRenewalInvoice(params: {
 	subscriptionId: string;
 	customer: string | { id?: string } | null;
 	newPriceId: string;
