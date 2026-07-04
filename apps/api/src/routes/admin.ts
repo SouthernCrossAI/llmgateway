@@ -10993,6 +10993,9 @@ admin.openapi(getDevpassSubscriber, async (c) => {
 					"dev_plan_cancel",
 					"dev_plan_end",
 					"dev_plan_renewal",
+					// Refunds against DevPass payments — shown as a line item so the
+					// history matches the net revenue reported in the KPIs/detail.
+					"credit_refund",
 					// Legacy types — pre dev_plan_* rename, still in DB for older
 					// dev plan subscribers; without these their history reads as empty.
 					"subscription_start",

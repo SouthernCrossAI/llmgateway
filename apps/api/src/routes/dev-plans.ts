@@ -2154,6 +2154,7 @@ const getInvoices = createRoute({
 									"dev_plan_start",
 									"dev_plan_renewal",
 									"dev_plan_upgrade",
+									"credit_refund",
 								]),
 								date: z.string(),
 								amount: z.string().nullable(),
@@ -2186,7 +2187,14 @@ devPlans.openapi(getInvoices, async (c) => {
 	const transactions = await db.query.transaction.findMany({
 		where: {
 			organizationId: { eq: personalOrg.id },
-			type: { in: ["dev_plan_start", "dev_plan_renewal", "dev_plan_upgrade"] },
+			type: {
+				in: [
+					"dev_plan_start",
+					"dev_plan_renewal",
+					"dev_plan_upgrade",
+					"credit_refund",
+				],
+			},
 		},
 		orderBy: {
 			createdAt: "desc",
@@ -2195,7 +2203,11 @@ devPlans.openapi(getInvoices, async (c) => {
 
 	const invoices = transactions.map((t) => ({
 		id: t.id,
-		type: t.type as "dev_plan_start" | "dev_plan_renewal" | "dev_plan_upgrade",
+		type: t.type as
+			| "dev_plan_start"
+			| "dev_plan_renewal"
+			| "dev_plan_upgrade"
+			| "credit_refund",
 		date: t.createdAt.toISOString(),
 		amount: t.amount,
 		creditAmount: t.creditAmount,
