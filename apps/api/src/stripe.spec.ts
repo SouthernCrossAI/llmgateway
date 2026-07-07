@@ -944,4 +944,60 @@ describe("handleChargeRefunded — dev plan refund tracking", () => {
 		});
 		expect(refunds).toHaveLength(1);
 	});
+
+	test("records a refund for a chat_plan_start that stored only the invoice id", async () => {
+		// Chat plan checkout records chat_plan_start with the invoice id but no
+		// payment intent, exactly like DevPass. The handler must resolve the invoice
+		// and record the refund instead of logging "Original transaction not found".
+		await db.insert(tables.organization).values({
+			id: ORG_ID,
+			name: "Acme Co",
+			billingEmail: "billing@acme.test",
+			stripeCustomerId: "cus_chat_refund",
+			chatPlan: "pro",
+			chatPlanCreditsLimit: "100",
+			chatPlanStripeSubscriptionId: SUB_ID,
+		});
+		const [original] = await db
+			.insert(tables.transaction)
+			.values({
+				organizationId: ORG_ID,
+				type: "chat_plan_start",
+				amount: "20",
+				creditAmount: "100",
+				currency: "USD",
+				status: "completed",
+				stripeInvoiceId: "in_chat_refund",
+				description: "Chat Plan PRO started via Stripe Checkout",
+			})
+			.returning();
+
+		stripeMock.invoicePayments.list.mockResolvedValue({
+			data: [{ invoice: "in_chat_refund" }],
+		});
+		stripeMock.refunds.list.mockResolvedValue({
+			data: [{ id: "re_chat_refund", amount: 2000, reason: null }],
+		});
+
+		await handleChargeRefunded(
+			makeChargeRefundedEvent({
+				paymentIntentId: "pi_chat_refund",
+				customer: "cus_chat_refund",
+			}),
+		);
+
+		const refund = await db.query.transaction.findFirst({
+			where: { stripeRefundId: { eq: "re_chat_refund" } },
+		});
+		expect(refund?.type).toBe("credit_refund");
+		expect(refund?.amount).toBe("20");
+		expect(refund?.relatedTransactionId).toBe(original.id);
+
+		// Chat plans use virtual plan credits, so the refund must not deduct from the
+		// org's pay-as-you-go credit balance.
+		const org = await db.query.organization.findFirst({
+			where: { id: { eq: ORG_ID } },
+		});
+		expect(org?.credits).toBe("0");
+	});
 });
