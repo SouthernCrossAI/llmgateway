@@ -7,9 +7,10 @@ import { apiAuth } from "@/auth/config.js";
 import { getApiBaseUrl } from "@/lib/api-url.js";
 import { maskToken } from "@/lib/maskToken.js";
 import { getOrgProjectsOldestFirst } from "@/lib/sso-default-projects.js";
+import { recomputeRoleForGroupName } from "@/lib/sso-roles.js";
 
 import { logAuditEvent } from "@llmgateway/audit";
-import { and, db, eq, shortid, tables } from "@llmgateway/db";
+import { and, db, eq, isNull, shortid, tables } from "@llmgateway/db";
 import { getApiKeyFingerprint } from "@llmgateway/shared/api-key-hash";
 
 import type { ServerTypes } from "@/vars.js";
@@ -311,6 +312,24 @@ sso.openapi(register, async (c) => {
 			createdAt: tables.ssoProvider.createdAt,
 		});
 
+	// The org-stamping update matched no row: the plugin didn't persist the
+	// provider as expected. Clean up any orphaned, unassigned row it may have
+	// left (organizationId still null) so a failed registration can't linger,
+	// and fail loudly instead of crashing on `provider.id` below.
+	if (!provider) {
+		await db
+			.delete(tables.ssoProvider)
+			.where(
+				and(
+					eq(tables.ssoProvider.providerId, providerId),
+					isNull(tables.ssoProvider.organizationId),
+				),
+			);
+		throw new HTTPException(500, {
+			message: "Failed to register SSO provider",
+		});
+	}
+
 	await logAuditEvent({
 		organizationId,
 		userId: user.id,
@@ -593,7 +612,19 @@ sso.openapi(createRoleMapping, async (c) => {
 
 	const { organizationId, groupName, role } = c.req.valid("json");
 
-	await assertEnterpriseOrgAccess(user.id, organizationId);
+	const { role: callerRole } = await assertEnterpriseOrgAccess(
+		user.id,
+		organizationId,
+	);
+
+	// Mirror the team-role boundary: admins can't grant owner. Since group
+	// mappings drive SCIM role recomputation, an owner mapping would otherwise
+	// let an admin promote members (or themselves) to owner.
+	if (role === "owner" && callerRole !== "owner") {
+		throw new HTTPException(403, {
+			message: "Only owners can create an owner role mapping",
+		});
+	}
 
 	const existing = await db.query.ssoRoleMapping.findFirst({
 		where: {
@@ -616,6 +647,11 @@ sso.openapi(createRoleMapping, async (c) => {
 			groupName: tables.ssoRoleMapping.groupName,
 			role: tables.ssoRoleMapping.role,
 		});
+
+	// If the IdP already pushed this group and its members (the usual onboarding
+	// order), apply the new mapping to them now instead of waiting for a later
+	// SCIM membership event.
+	await recomputeRoleForGroupName(organizationId, groupName);
 
 	await logAuditEvent({
 		organizationId,
@@ -671,6 +707,10 @@ sso.openapi(removeRoleMapping, async (c) => {
 	await db
 		.delete(tables.ssoRoleMapping)
 		.where(eq(tables.ssoRoleMapping.id, id));
+
+	// Members elevated by this mapping keep the role until a later SCIM event
+	// otherwise; recompute them now so removing the mapping revokes the access.
+	await recomputeRoleForGroupName(organizationId, existing.groupName);
 
 	await logAuditEvent({
 		organizationId,
@@ -950,6 +990,16 @@ sso.openapi(revokeScim, async (c) => {
 
 	await assertEnterpriseOrgAccess(user.id, organizationId);
 
+	// Resolve the active token first so the audit event identifies the revoked
+	// token (id + masked value), consistent with creation, rather than the org.
+	const active = await db.query.scimToken.findFirst({
+		where: {
+			organizationId: { eq: organizationId },
+			status: { eq: "active" },
+		},
+		columns: { id: true, maskedToken: true },
+	});
+
 	await db
 		.update(tables.scimToken)
 		.set({ status: "deleted" })
@@ -965,7 +1015,10 @@ sso.openapi(revokeScim, async (c) => {
 		userId: user.id,
 		action: "scim_token.revoke",
 		resourceType: "scim_token",
-		resourceId: organizationId,
+		resourceId: active?.id ?? organizationId,
+		metadata: active?.maskedToken
+			? { resourceName: active.maskedToken }
+			: undefined,
 	});
 
 	return c.json({ message: "SCIM token revoked successfully" });
