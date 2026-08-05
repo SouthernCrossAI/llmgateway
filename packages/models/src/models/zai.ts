@@ -184,6 +184,7 @@ export const zaiModels = [
 				// SCX rejects max_tokens above 131072 ("expected a value <= 131072"),
 				// despite its catalogue advertising a 128k ceiling
 				maxOutput: 131072,
+				quantization: "fp8",
 				streaming: true,
 				reasoning: true,
 				vision: false,
